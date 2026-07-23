@@ -28,7 +28,7 @@
     <h2>Registro completo spese</h2>
     <div class="table-wrap">
     <table id="tbl-registro">
-      <thead><tr><th>N.</th><th>Chi ha pagato</th><th>Descrizione</th><th class="num">Importo</th><th>Partecipanti</th></tr></thead>
+      <thead><tr><th>N.</th><th>Chi ha pagato</th><th>Titolo spesa</th><th class="num">Importo</th><th>Partecipanti</th></tr></thead>
       <tbody></tbody>
     </table>
     </div>
@@ -71,10 +71,7 @@
   <!-- ===================== TAB CENE ===================== -->
   <section id="tab-dettaglio" class="tab-panel">
     <h2>Spese in dettaglio</h2>
-
-    <h3>Riepilogo per persona</h3>
-    <p><em>Se una spesa non è divisibile esattamente (es. dividendo per 3), gli importi vengono arrotondati per difetto al centesimo e i centesimi restanti assegnati a chi, al momento del calcolo, sta spendendo di meno: è normale che due persone con la stessa spesa "sulla carta" abbiano un centesimo di differenza.</em></p>
-    <div id="dettaglio-riepilogo-container"></div>
+    <p><em>Se una spesa non è divisibile esattamente (es. dividendo per 3), gli importi vengono arrotondati per difetto al centesimo e i centesimi restanti assegnati a chi, al momento del calcolo, sta spendendo di meno: è normale che due persone con la stessa spesa "sulla carta" abbiano un centesimo di differenza. Se il totale anticipato per una spesa/cena non coincide con il dovuto calcolato, la differenza viene ridistribuita automaticamente (solata se si è pagato di più, controsolata se si è pagato di meno).</em></p>
 
     <h3>Cene</h3>
     <div id="cene-container"></div>
@@ -157,41 +154,32 @@
       </div>
       <div class="collapsible-body">
         <form class="admin-form" id="f-spesa-form">
-          <label>Chi ha pagato (una o più persone) e quanto</label>
-          <div id="f-spesa-pagatori"></div>
-          <div class="status" id="status-spesa-tot"></div>
-          <label>Descrizione</label>
-          <input type="text" id="f-spesa-desc" placeholder="Es. Spesa bibite" required>
-          <label>Partecipanti (lascia tutto deselezionato = tutti)</label>
-          <div class="persona-checkboxes" id="f-spesa-partecipanti"></div>
+          <label>Titolo spesa</label>
+          <input type="text" id="f-spesa-titolo" placeholder="Es. Spesa bibite" required>
+
+          <label>Partecipanti alla spesa (spunta chi partecipa — di default sono tutte spuntate)</label>
+          <div id="f-spesa-partecipanti"></div>
+
+          <label>Metodo di divisione</label>
+          <div style="display:flex; gap:1.2rem; flex-wrap:wrap;">
+            <label class="chk"><input type="radio" name="f-spesa-modo" id="f-spesa-modo-equa" value="equa" checked> Divisione equa tra i partecipanti</label>
+            <label class="chk"><input type="radio" name="f-spesa-modo" id="f-spesa-modo-nonequa" value="nonequa"> Divisione non equa (quote personalizzate)</label>
+          </div>
+
+          <div id="f-spesa-quote-box" style="display:none">
+            <label>Quota dovuta da ciascun partecipante selezionato (€)</label>
+            <div id="f-spesa-quote-righe"></div>
+            <div class="status" id="status-spesa-quote-tot"></div>
+          </div>
+
+          <label>Chi ha anticipato i soldi (spunta chi ha pagato — di default nessuno è spuntato)</label>
+          <div id="f-spesa-pagatori-check"></div>
+          <div id="f-spesa-pagatori-righe"></div>
+          <div class="status" id="status-spesa-pagatori-tot"></div>
+
           <button class="btn-primary" type="submit" id="btn-spesa-submit">Aggiungi spesa</button>
           <button class="btn-secondary" type="button" id="btn-spesa-annulla" style="display:none">Annulla modifica</button>
           <div class="status" id="status-spesa"></div>
-        </form>
-      </div>
-    </div>
-
-    <div class="collapsible-section collapsed" id="sec-spesa-ne">
-      <div class="collapsible-header" data-toggle="sec-spesa-ne">
-        <strong>Aggiungi spesa non equa <span style="font-weight:normal; font-size:.8rem;">[NE]</span></strong>
-        <button class="btn-gear btn-arrow" type="button" aria-label="Mostra/nascondi">▶</button>
-      </div>
-      <div class="collapsible-body">
-        <p><em>Usa questa opzione quando una spesa generale (non una cena) va divisa tra i partecipanti in importi diversi da persona a persona, invece che in parti uguali. Una o più persone possono aver anticipato i soldi.</em></p>
-        <form class="admin-form" id="f-spesa-ne-form">
-          <label>Chi ha anticipato i soldi (una o più persone) e quanto</label>
-          <div id="f-spesa-ne-pagatori"></div>
-          <div class="status" id="status-spesa-ne-pagatori-tot"></div>
-          <label>Descrizione</label>
-          <input type="text" id="f-spesa-ne-desc" placeholder="Es. Regalo di compleanno" required>
-          <label>Partecipanti alla spesa (spunta chi partecipa — di default sono tutte spuntate)</label>
-          <div id="f-spesa-ne-partecipanti"></div>
-          <label>Quota dovuta da ciascun partecipante selezionato (€)</label>
-          <div id="f-spesa-ne-righe"></div>
-          <div class="status" id="status-spesa-ne-tot"></div>
-          <button class="btn-primary" type="submit" id="btn-spesa-ne-submit">Aggiungi spesa non equa</button>
-          <button class="btn-secondary" type="button" id="btn-spesa-ne-annulla" style="display:none">Annulla modifica</button>
-          <div class="status" id="status-spesa-ne"></div>
         </form>
       </div>
     </div>
