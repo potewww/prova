@@ -66,6 +66,11 @@ details.cena-block { border: 1px solid var(--border); border-radius: 8px; margin
 details.cena-block summary { cursor: pointer; font-weight: bold; font-size: 1.05rem; color: var(--header); padding: .4rem 0; }
 .sconti-info { font-size: .85rem; color: #555; }
 
+.evento-solata { font-size: .85rem; padding: .5rem .7rem; border-radius: 6px; margin: .4rem 0 .8rem; }
+.evento-solata.tipo-solata { background: #fff3cd; color: #7a5b00; }
+.evento-solata.tipo-controsolata { background: #e6eefb; color: #1e3a6f; }
+.evento-solata.tipo-nessuna { background: #eee; color: #666; font-style: italic; }
+
 .cena-table th, .cena-table td { font-size: .82rem; }
 
 form.admin-form { display: flex; flex-direction: column; gap: .6rem; margin-bottom: 1.5rem; }
@@ -74,9 +79,9 @@ form.admin-form input, form.admin-form select {
   padding: .5rem; border: 1px solid var(--border); border-radius: 6px; font-size: .9rem; width: 100%;
 }
 .persona-checkboxes, .cena-spesa-partecipanti { display: flex; flex-wrap: wrap; gap: .4rem .8rem; padding: .5rem; border: 1px solid var(--border); border-radius: 6px; max-height: 140px; overflow-y: auto; }
-.sconti-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: .4rem; padding: .5rem; border: 1px solid var(--border); border-radius: 6px; }
-.sconti-grid label { display: flex; align-items: center; gap: .3rem; font-weight: normal; font-size: .85rem; }
-.sconti-grid input { width: 60px !important; }
+.sconti-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: .3rem; padding: .5rem; border: 1px solid var(--border); border-radius: 6px; align-items: end; }
+.sconti-grid .cp-field label { font-weight: 600; }
+.sconti-grid input { width: 100% !important; }
 .chk { font-weight: normal !important; display: flex; align-items: center; gap: .3rem; font-size: .85rem !important; }
 .chk input { width: auto !important; }
 
@@ -92,7 +97,7 @@ button.btn-secondary { background: white; border: 1px solid var(--accent); color
 .status-ok { background: #d9f2df; color: #1e7a34; }
 .status-error { background: #fbdada; color: #b02a2a; }
 
-#cena-persone-checkboxes, #f-spesa-ne-partecipanti {
+#cena-persone-checkboxes, #f-spesa-partecipanti, #f-spesa-pagatori-check {
   display: flex; flex-wrap: wrap; gap: .4rem .8rem; padding: .5rem;
   border: 1px solid var(--border); border-radius: 6px; max-height: 160px; overflow-y: auto;
 }
@@ -262,7 +267,7 @@ button.btn-secondary { background: white; border: 1px solid var(--accent); color
 
   .sconti-grid { grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); }
   .persona-checkboxes, .cena-spesa-partecipanti { max-height: 110px; }
-  #cena-persone-checkboxes, #f-spesa-ne-partecipanti { max-height: 130px; }
+  #cena-persone-checkboxes, #f-spesa-partecipanti, #f-spesa-pagatori-check { max-height: 130px; }
 
   .token-box { padding: .8rem; font-size: .85rem; }
 
