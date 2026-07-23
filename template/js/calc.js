@@ -1,24 +1,26 @@
 // ============================================================
-// calc.js — porting fedele della logica Lua (calcoli.tex + cene/calcolicene.tex)
-// + gestione arrotondamenti equi (centesimini) e riconciliazione automatica (solata)
+// calc.js — logica di calcolo (cene + spese generiche), con
+// arrotondamenti equi (centesimini) e riconciliazione automatica
+// sia in surplus (solata) che in deficit (controsolata).
 // ============================================================
 
 const CAT_CIBO = ["antipasto", "primi", "secondi", "contorni", "pizza", "panini", "frutta"];
 const CAT_BEVANDE = ["acqua", "caffe", "bibite", "birra", "vino", "liquori"];
-const CAT_ALTRO = ["centesimini", "solata", "menu", "coperto", "dolci"];
+const CAT_ALTRO = ["centesimini", "solata", "controsolata", "menu", "coperto", "dolci"];
 const CAT_ALL = [...CAT_CIBO, ...CAT_BEVANDE, ...CAT_ALTRO];
 
-// "solata" e "centesimini" non sono dati inseribili manualmente: vengono calcolati
-// automaticamente (vedi applicaSolataAutomatica e la logica di arrotondamento equo).
-// Vanno quindi esclusi dai campi del form e dal totale "di base" della persona,
-// ma restano colonne normali ai fini di stampa/sconti.
-const CAT_INPUT = CAT_ALL.filter(c => c !== "solata" && c !== "centesimini");
+// "solata", "controsolata" e "centesimini" non sono dati inseribili manualmente: vengono
+// calcolati automaticamente (vedi calcolaSolataControsolata) e vanno quindi esclusi dai
+// campi del form e dal totale "di base" della persona, ma restano colonne normali ai fini
+// di stampa/sconti.
+const CAT_INPUT = CAT_ALL.filter(c => c !== "solata" && c !== "controsolata" && c !== "centesimini");
 
 const CAT_LABELS = {
   antipasto: "Antipasto", primi: "Primi", secondi: "Secondi", contorni: "Contorni",
   pizza: "Pizza", panini: "Panini", frutta: "Frutta",
   acqua: "Acqua", caffe: "Caffè", bibite: "Bibite", birra: "Birra", vino: "Vino", liquori: "Liquori",
-  centesimini: "Centesimini (auto)", solata: "Solata (auto)", menu: "Menù", coperto: "Coperto", dolci: "Dolci"
+  centesimini: "Centesimini (auto)", solata: "Solata (auto)", controsolata: "Controsolata (auto)",
+  menu: "Menù", coperto: "Coperto", dolci: "Dolci"
 };
 
 function applicaSconto(valore, categoria, sconti) {
@@ -27,7 +29,7 @@ function applicaSconto(valore, categoria, sconti) {
   return valore;
 }
 
-// Somma le sole categorie "di base" inserite a mano per la persona (esclude "solata")
+// Somma le sole categorie "di base" inserite a mano per la persona (esclude gli automatismi)
 function totaleConSconti(p, sconti) {
   return CAT_INPUT.reduce((sum, c) => sum + applicaSconto(p[c] || 0, c, sconti), 0);
 }
@@ -48,14 +50,64 @@ function dividiInParti(importo, n) {
   return { shares, resto: Math.round(restoCent) / 100 };
 }
 
+// ---------- SOLATA / CONTROSOLATA (generico, riusato da cene e da spese) ----------
+// "diff" = totale pagato - totale dovuto (di base).
+//   diff > 0  -> è stato pagato di più del dovuto: il surplus ("solata") viene ridistribuito
+//                in modo equo tra i partecipanti (aggiunto al loro dovuto).
+//   diff < 0  -> è stato pagato di meno del dovuto: il deficit ("controsolata") viene
+//                ridistribuito in modo equo tra i partecipanti (sottratto dal loro dovuto).
+// Il resto non distribuibile in centesimi va, con lo stesso criterio in entrambi i casi,
+// a chi sta spendendo di meno al momento del calcolo (usando "totaleCorrente").
+// Restituisce null se non c'è nulla da ridistribuire (diff trascurabile).
+function calcolaSolataControsolata(diff, partecipanti, totaleCorrente) {
+  if (!partecipanti || partecipanti.length === 0 || Math.abs(diff) <= 0.005) return null;
+  const positivo = diff > 0;
+  const magnitudo = Math.abs(diff);
+  const { shares, resto } = dividiInParti(magnitudo, partecipanti.length);
+  const valori = {};
+  // "valori" contiene SOLO le quote base (senza il resto): il resto va esclusivamente
+  // nei centesimini, per non contarlo due volte (una nella colonna solata/controsolata
+  // e una nei centesimini).
+  partecipanti.forEach((nome, i) => { valori[nome] = positivo ? shares[i] : -shares[i]; });
+  let restoInfo = null;
+  if (resto > 0.001) {
+    let minNome = partecipanti[0];
+    partecipanti.forEach(nome => {
+      if ((totaleCorrente[nome] || 0) < (totaleCorrente[minNome] || 0)) minNome = nome;
+    });
+    const valResto = positivo ? resto : -resto;
+    restoInfo = { nome: minNome, valore: valResto };
+  }
+  return { tipo: positivo ? "solata" : "controsolata", importo: magnitudo, valori, restoInfo };
+}
+
+// Aggiunge un contributo firmato alla "dettaglio" (elenco dei singoli addendi, usato per
+// mostrare in tabella espressioni come "0.01+0.03-0.02") di una persona/categoria.
+function aggiungiContributo(dettaglio, nome, valore) {
+  if (!valore) return;
+  if (!dettaglio[nome]) dettaglio[nome] = [];
+  dettaglio[nome].push(valore);
+}
+
+// Formatta un elenco di contributi firmati come stringa tipo "0.01+0.03-0.02"
+function formatEspressioneContributi(lista) {
+  if (!lista || lista.length === 0) return "";
+  return lista.map((v, i) => {
+    const abs = Math.abs(v).toFixed(2);
+    const segno = v < 0 ? "-" : (i === 0 ? "" : "+");
+    return `${segno}${abs}`;
+  }).join("");
+}
+
 // Calcola, per una cena, le quote derivanti dalle spese condivise, con arrotondamento equo:
 // se una spesa "divisa" non si divide esattamente in centesimi, la parte non assegnabile
 // viene aggiunta alla colonna "centesimini" della persona (tra i partecipanti a quella spesa)
 // che, al momento del calcolo, sta spendendo meno.
-// Restituisce { quoteColonna: {nome: {categoria: importo}}, quoteSeparate: {nome: {descrizione: importo}} }
+// Restituisce { quoteColonna, quoteSeparate, centesiminiDettaglio }
 function calcolaQuoteCondivise(persone, speseCondivise, sconti) {
   const quoteColonna = {};
   const quoteSeparate = {};
+  const centesiminiDettaglio = {};
   const totaleCorrente = {};
   persone.forEach(p => {
     quoteColonna[p.nome] = {};
@@ -88,6 +140,7 @@ function calcolaQuoteCondivise(persone, speseCondivise, sconti) {
         let minNome = part[0];
         part.forEach(nome => { if (totaleCorrente[nome] < totaleCorrente[minNome]) minNome = nome; });
         quoteColonna[minNome]["centesimini"] = (quoteColonna[minNome]["centesimini"] || 0) + resto;
+        aggiungiContributo(centesiminiDettaglio, minNome, resto);
         totaleCorrente[minNome] += resto;
       }
     } else if (spesa.tipo === "persona") {
@@ -95,7 +148,7 @@ function calcolaQuoteCondivise(persone, speseCondivise, sconti) {
     }
   });
 
-  return { quoteColonna, quoteSeparate };
+  return { quoteColonna, quoteSeparate, centesiminiDettaglio };
 }
 
 // Totale dovuto da una persona in una cena (cibo/bevande/altro + quote condivise, con sconti)
@@ -108,39 +161,43 @@ function dovutoCena(p, sconti, quoteColonna, quoteSeparate) {
   return t;
 }
 
-// "Solata": riconciliazione automatica. Se il totale pagato al tavolo supera il totale
-// dovuto calcolato (cibo+bevande+altro+condivise), la differenza viene ridistribuita in
-// modo equo tra tutti i partecipanti alla cena (colonna "solata"), con lo stesso criterio
-// di arrotondamento equo usato per le spese condivise. Se invece si è pagato meno o uguale,
-// "solata" resta a zero (non viene creato un debito automatico).
-function applicaSolataAutomatica(persone, sconti, quoteColonna, quoteSeparate) {
-  if (persone.length === 0) return;
+// Riconciliazione automatica (solata / controsolata): se il totale pagato al tavolo è
+// diverso dal totale dovuto calcolato (cibo+bevande+altro+condivise), la differenza viene
+// ridistribuita in modo equo tra tutti i partecipanti alla cena (colonna "solata" se si è
+// pagato di più, "controsolata" se si è pagato di meno).
+function applicaSolataAutomatica(persone, sconti, quoteColonna, quoteSeparate, centesiminiDettaglio) {
+  if (persone.length === 0) return null;
   const dovutoBase = {};
   persone.forEach(p => { dovutoBase[p.nome] = dovutoCena(p, sconti, quoteColonna, quoteSeparate); });
 
   const totgen = Object.values(dovutoBase).reduce((a, b) => a + b, 0);
   const totpagato = persone.reduce((a, p) => a + (p.pagato || 0), 0);
-  const surplus = totpagato - totgen;
-  if (surplus <= 0.005) return;
+  const diff = totpagato - totgen;
 
-  const { shares, resto } = dividiInParti(surplus, persone.length);
-  persone.forEach((p, i) => {
-    quoteColonna[p.nome]["solata"] = (quoteColonna[p.nome]["solata"] || 0) + shares[i];
-    dovutoBase[p.nome] += shares[i];
+  const nomi = persone.map(p => p.nome);
+  const risultato = calcolaSolataControsolata(diff, nomi, dovutoBase);
+  if (!risultato) return null;
+
+  const colonna = risultato.tipo; // "solata" o "controsolata"
+  persone.forEach(p => {
+    const v = risultato.valori[p.nome];
+    if (!v) return;
+    quoteColonna[p.nome][colonna] = (quoteColonna[p.nome][colonna] || 0) + v;
+    dovutoBase[p.nome] += v;
   });
-  if (resto > 0.001) {
-    let minNome = persone[0].nome;
-    persone.forEach(p => { if (dovutoBase[p.nome] < dovutoBase[minNome]) minNome = p.nome; });
-    quoteColonna[minNome]["centesimini"] = (quoteColonna[minNome]["centesimini"] || 0) + resto;
+  if (risultato.restoInfo) {
+    const { nome, valore } = risultato.restoInfo;
+    quoteColonna[nome]["centesimini"] = (quoteColonna[nome]["centesimini"] || 0) + valore;
+    if (centesiminiDettaglio) aggiungiContributo(centesiminiDettaglio, nome, valore);
   }
+  return { tipo: risultato.tipo, importo: risultato.importo, dovutoCorretto: totgen };
 }
 
-// Calcola tutte le quote di una cena (condivise + solata automatica): usata da chiunque
-// abbia bisogno dello stato completo di una cena (registro spese, dettaglio cena).
+// Calcola tutte le quote di una cena (condivise + solata/controsolata automatiche)
 function calcolaQuoteComplete(cena) {
-  const { quoteColonna, quoteSeparate } = calcolaQuoteCondivise(cena.persone, cena.speseCondivise, cena.sconti);
-  applicaSolataAutomatica(cena.persone, cena.sconti, quoteColonna, quoteSeparate);
-  return { quoteColonna, quoteSeparate };
+  const { quoteColonna, quoteSeparate, centesiminiDettaglio } = calcolaQuoteCondivise(cena.persone, cena.speseCondivise, cena.sconti);
+  const eventoSolata = applicaSolataAutomatica(cena.persone, cena.sconti, quoteColonna, quoteSeparate, centesiminiDettaglio);
+  return { quoteColonna, quoteSeparate, centesiminiDettaglio, eventoSolata };
 }
 
 // Genera le "spese NE" (Non Equo) da integrare nel registro spese generale,
@@ -172,13 +229,15 @@ function integraCenaInSpese(cena, gruppoId) {
   return nuoveSpese;
 }
 
-// Divide una spesa "semplice" (non di cena) tra i suoi partecipanti con arrotondamento
+// Divide una spesa "semplice" (equa, non di cena) tra i suoi partecipanti con arrotondamento
 // equo: ogni quota è arrotondata per difetto al centesimo, il resto va a chi tra i
 // partecipanti sta spendendo meno al momento (in base allo stato accumulato finora).
+// Restituisce anche il contributo di resto (per la colonna centesimini) se presente.
 function ripartisciSpesaSemplice(s, part, spesaEffettivaCorrente) {
   const { shares, resto } = dividiInParti(s.importo, part.length);
   const risultato = {};
   part.forEach((nome, i) => { risultato[nome] = shares[i]; });
+  let restoInfo = null;
   if (resto > 0.001) {
     let minNome = part[0];
     part.forEach(nome => {
@@ -186,8 +245,82 @@ function ripartisciSpesaSemplice(s, part, spesaEffettivaCorrente) {
       if (cur < (spesaEffettivaCorrente[minNome] || 0)) minNome = nome;
     });
     risultato[minNome] += resto;
+    restoInfo = { nome: minNome, valore: resto };
   }
-  return risultato;
+  return { risultato, restoInfo };
+}
+
+// ---------- RIEPILOGO DI UN SINGOLO GRUPPO DI SPESA (equa o non equa) ----------
+// Calcola, per un "gruppo" di spesa generica (spesa.gruppoId), la tabella completa:
+// pagato/dovuto-di-base/solata/controsolata/centesimini/dovuto-finale/saldo per ciascun
+// partecipante, più le transazioni consigliate per pareggiare SOLO quella spesa.
+// - Se la spesa NON ha "quote" (equa): il dovuto di base è la divisione equa del totale
+//   pagato tra i partecipanti (per costruzione pagato==dovuto sempre, quindi solata e
+//   controsolata restano a zero: rimane solo l'eventuale centesimino di arrotondamento).
+// - Se la spesa ha "quote" (non equa): il dovuto di base è la quota inserita manualmente
+//   per ciascun partecipante; se la somma delle quote non coincide con il totale
+//   anticipato, la differenza genera automaticamente una solata/controsolata.
+function calcolaRiepilogoGruppoSpesa(gruppo) {
+  const partecipanti = [...new Set([...(gruppo.partecipanti || []), ...gruppo.pagatori.map(p => p.nome)])]
+    .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+  const pagato = {};
+  partecipanti.forEach(n => pagato[n] = 0);
+  gruppo.pagatori.forEach(p => { if (pagato[p.nome] !== undefined) pagato[p.nome] += p.importo; });
+  const totPagato = Object.values(pagato).reduce((a, b) => a + b, 0);
+
+  const dovutoBase = {};
+  const centesiminiDettaglio = {};
+  let restoEqua = null;
+  if (gruppo.isNE) {
+    partecipanti.forEach(n => dovutoBase[n] = (gruppo.quote && gruppo.quote[n]) || 0);
+  } else {
+    const { risultato, restoInfo } = ripartisciSpesaSemplice({ importo: totPagato }, partecipanti, {});
+    partecipanti.forEach(n => dovutoBase[n] = risultato[n] || 0);
+    if (restoInfo) {
+      // ripartisciSpesaSemplice ha già sommato il resto dentro "risultato[minNome]": lo
+      // separiamo da dovutoBase e lo spostiamo nei centesimini, così viene contato una
+      // volta sola quando più sotto si ricompone dovutoFinale = dovutoBase + ... + centesimini.
+      dovutoBase[restoInfo.nome] -= restoInfo.valore;
+      restoEqua = restoInfo;
+      aggiungiContributo(centesiminiDettaglio, restoInfo.nome, restoInfo.valore);
+    }
+  }
+
+  const centesiminiPreEsistenti = Object.values(centesiminiDettaglio).reduce((a, lista) => a + lista.reduce((x, y) => x + y, 0), 0);
+  const totDovutoBase = Object.values(dovutoBase).reduce((a, b) => a + b, 0) + centesiminiPreEsistenti;
+  const diff = totPagato - totDovutoBase;
+  const solata = {}, controsolata = {};
+  partecipanti.forEach(n => { solata[n] = 0; controsolata[n] = 0; });
+  const risultatoSC = calcolaSolataControsolata(diff, partecipanti, dovutoBase);
+  let eventoSolata = null;
+  if (risultatoSC) {
+    partecipanti.forEach(n => {
+      const v = risultatoSC.valori[n];
+      if (!v) return;
+      if (risultatoSC.tipo === "solata") solata[n] += v; else controsolata[n] += v;
+    });
+    if (risultatoSC.restoInfo) {
+      aggiungiContributo(centesiminiDettaglio, risultatoSC.restoInfo.nome, risultatoSC.restoInfo.valore);
+    }
+    eventoSolata = { tipo: risultatoSC.tipo, importo: risultatoSC.importo, dovutoCorretto: totDovutoBase };
+  }
+
+  const dovutoFinale = {}, saldi = {};
+  const centesimini = {};
+  partecipanti.forEach(n => { centesimini[n] = (centesiminiDettaglio[n] || []).reduce((a, b) => a + b, 0); });
+  partecipanti.forEach(n => {
+    dovutoFinale[n] = dovutoBase[n] + solata[n] + controsolata[n] + centesimini[n];
+    saldi[n] = (pagato[n] || 0) - dovutoFinale[n];
+  });
+
+  const transazioni = calcolaTransazioni(saldi);
+  const totali = {
+    pagato: totPagato,
+    dovuto: Object.values(dovutoFinale).reduce((a, b) => a + b, 0)
+  };
+
+  return { partecipanti, pagato, dovutoBase, solata, controsolata, centesimini, centesiminiDettaglio, dovutoFinale, saldi, transazioni, totali, eventoSolata };
 }
 
 // Pipeline completa: dato (persone, speseBase, rimborsi, cene) calcola tutto lo stato globale.
@@ -233,9 +366,9 @@ function calcolaStatoGlobale(persone, speseBase, rimborsiData, ceneData) {
       dettaglioSpese.push({ ...s, quoteCalcolate: s.quote });
     } else {
       const part = ((s.partecipanti && s.partecipanti.length) ? s.partecipanti : nomi).filter(n => spesaEffettiva[n] !== undefined);
-      const quote = ripartisciSpesaSemplice(s, part, spesaEffettiva);
-      part.forEach(p => { spesaEffettiva[p] += quote[p]; });
-      dettaglioSpese.push({ ...s, quoteCalcolate: quote });
+      const { risultato } = ripartisciSpesaSemplice(s, part, spesaEffettiva);
+      part.forEach(p => { spesaEffettiva[p] += risultato[p]; });
+      dettaglioSpese.push({ ...s, quoteCalcolate: risultato });
     }
   });
 
@@ -291,7 +424,7 @@ function calcolaTransazioni(saldi) {
 
 // Calcolo dettagliato "tabellaTotali"/"tabellaRimborsi" per una singola cena
 function calcolaDettaglioCena(cena) {
-  const { quoteColonna, quoteSeparate } = calcolaQuoteComplete(cena);
+  const { quoteColonna, quoteSeparate, centesiminiDettaglio, eventoSolata } = calcolaQuoteComplete(cena);
   const righe = cena.persone.map(p => {
     const dovuto = dovutoCena(p, cena.sconti, quoteColonna, quoteSeparate);
     const dovutoSenzaSconti = totaleSenzaSconti(p) +
@@ -312,5 +445,5 @@ function calcolaDettaglioCena(cena) {
   righe.forEach(r => saldiCena[r.nome] = r.saldo);
   const transazioniCena = calcolaTransazioni(saldiCena);
 
-  return { righe, totgen, totgenSenzaSconti, totpagato, hasSconti, transazioniCena, quoteColonna, quoteSeparate };
+  return { righe, totgen, totgenSenzaSconti, totpagato, hasSconti, transazioniCena, quoteColonna, quoteSeparate, centesiminiDettaglio, eventoSolata };
 }
