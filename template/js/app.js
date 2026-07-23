@@ -36,9 +36,9 @@ function escapeHtml(str) {
 }
 
 // Identificatore univoco usato per raggruppare più voci di spese.json che in realtà
-// rappresentano UNA SOLA spesa con più persone che hanno anticipato i soldi (o una
-// spesa non equa con più pagatori): tutte le voci generate insieme condividono lo
-// stesso gruppoId, così la UI le mostra/modifica/elimina come un'unica spesa.
+// rappresentano UNA SOLA spesa con più persone che hanno anticipato i soldi: tutte le
+// voci generate insieme condividono lo stesso gruppoId, così la UI le mostra/modifica/
+// elimina come un'unica spesa.
 function generaId() {
   return "g" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
@@ -46,6 +46,12 @@ function generaId() {
 function safeScrollIntoView(elx) {
   try { if (elx && typeof elx.scrollIntoView === "function") elx.scrollIntoView({ behavior: "smooth", block: "center" }); }
   catch (e) { /* non bloccante: se il browser non supporta lo scroll animato, si ignora */ }
+}
+
+// Titolo "di base" di una spesa: rimuove il suffisso automatico " [NE]" usato per le
+// spese non eque, così da poter confrontare i titoli a prescindere dal metodo di divisione.
+function baseTitolo(desc) {
+  return (desc || "").replace(/\s*\[NE\]\s*$/, "").trim();
 }
 
 // ---------- CARICAMENTO DATI (lettura statica, nessun bisogno di token) ----------
@@ -65,10 +71,26 @@ function ricalcola() {
   STATE.stato = calcolaStatoGlobale(STATE.persone, STATE.spese, STATE.rimborsi, STATE.cene);
 }
 
+// ---------- NOMI UNIVOCI TRA CENE E SPESE ----------
+// Il titolo di una cena, di una spesa e di una spesa non equa condividono lo stesso
+// "spazio dei nomi": non possono coincidere (a meno di maiuscole/spazi), altrimenti
+// diventerebbe ambiguo capire a cosa ci si riferisce nel registro.
+// escludi: { gruppoSpesaId, indiceCena } — usati in modifica, per non confrontare una
+// voce con se stessa.
+function titoloGiaUsato(titolo, escludi) {
+  const base = baseTitolo(titolo).toLowerCase();
+  if (!base) return false;
+  const opts = escludi || {};
+  const collSpesa = raggruppaSpese().some(g =>
+    g.gruppoId !== opts.gruppoSpesaId && baseTitolo(g.descrizione).toLowerCase() === base);
+  const collCena = STATE.cene.some((c, i) =>
+    i !== opts.indiceCena && (c.titolo || "").toLowerCase() === base);
+  return collSpesa || collCena;
+}
+
 // ---------- RENDER: SEZIONE PRINCIPALE ----------
-// Mostra "Tutti" non solo quando l'array partecipanti è vuoto (convenzione storica per le
-// spese semplici), ma anche quando elenca esplicitamente TUTTE le persone esistenti (caso
-// tipico delle voci generate da cene o spese non eque, che salvano sempre l'elenco completo).
+// Mostra "Tutti" non solo quando l'array partecipanti è vuoto, ma anche quando elenca
+// esplicitamente TUTTE le persone esistenti.
 function formatPartecipanti(partecipanti) {
   if (!partecipanti || partecipanti.length === 0) return "Tutti";
   const set = new Set(partecipanti);
@@ -174,6 +196,17 @@ function renderCredenziali() {
   });
 }
 
+// ---------- MESSAGGIO SOLATA / CONTROSOLATA ----------
+function messaggioEventoSolata(evento) {
+  if (!evento) {
+    return `<div class="evento-solata tipo-nessuna">Nessuna solata/controsolata: il totale anticipato coincide con il dovuto calcolato.</div>`;
+  }
+  if (evento.tipo === "solata") {
+    return `<div class="evento-solata tipo-solata">💰 <strong>Solata applicata:</strong> è stato pagato ${euro(evento.importo)} in più rispetto al dovuto; l'importo corretto sarebbe stato <strong>${euro(evento.dovutoCorretto)}</strong>. Il surplus è stato ridistribuito equamente tra i partecipanti (colonna "Solata").</div>`;
+  }
+  return `<div class="evento-solata tipo-controsolata">📉 <strong>Controsolata applicata:</strong> è stato pagato ${euro(evento.importo)} in meno rispetto al dovuto; l'importo corretto sarebbe stato <strong>${euro(evento.dovutoCorretto)}</strong>. Il deficit è stato ridistribuito equamente tra i partecipanti (colonna "Controsolata").</div>`;
+}
+
 // ---------- RENDER: CENE ----------
 function fmtVal(v, cat, sconti) {
   if (!v) return "";
@@ -259,7 +292,9 @@ function renderTotaliECena(container, cena) {
   }
   html += "</tbody></table></div>";
 
-  html += `<h5>Transazioni per pareggiare i conti di questa cena</h5>`;
+  html += messaggioEventoSolata(d.eventoSolata);
+
+  html += `<h5>Rimborsi consigliati per pareggiare i conti di questa cena</h5>`;
   if (d.transazioniCena.length === 0) {
     html += "<p><em>Nessun rimborso necessario</em></p>";
   } else {
@@ -295,28 +330,9 @@ function renderCene() {
   });
 }
 
-// Tabella riassuntiva per persona nella scheda "Spese in dettaglio": stessi numeri di
-// "Totali per persona" nel Riepilogo (pagato/dovuto/saldo), calcolati su TUTTO — cene
-// comprese — non solo sulle spese generali.
-function renderDettaglioRiepilogo() {
-  const container = document.querySelector("#dettaglio-riepilogo-container");
-  if (!container) return;
-  const s = STATE.stato;
-  if (!s.nomi || s.nomi.length === 0) { container.innerHTML = `<p class="empty-note">Nessuna persona inserita.</p>`; return; }
-  let html = `<div class="table-wrap"><table><thead><tr><th>Nome</th><th class="num">Ha anticipato</th><th class="num">Ha speso</th><th class="num">Saldo</th></tr></thead><tbody>`;
-  s.nomi.forEach(n => {
-    const saldo = s.saldi[n] || 0;
-    const cls = saldo > 0.01 ? "row-green" : saldo < -0.01 ? "row-red" : "row-gray";
-    html += `<tr class="${cls}"><td>${escapeHtml(n)}</td><td class="num">${euro(s.totaliPersona[n] || 0)}</td><td class="num">${euro(s.spesaEffettiva[n] || 0)}</td><td class="num">${euro(saldo)}</td></tr>`;
-  });
-  html += `</tbody></table></div>`;
-  container.innerHTML = html;
-}
-
 // Raggruppa STATE.stato.dettaglioSpese per gruppoId, escludendo le voci generate dalle
 // cene (che hanno già la loro sezione dedicata sopra) e restituisce, per ciascun gruppo,
-// chi ha anticipato quanto e quanto deve realmente ciascun partecipante (quoteCalcolate:
-// stessi numeri usati nei totali generali, stesso arrotondamento equo).
+// chi ha anticipato quanto, i partecipanti e (se non equa) le quote inserite manualmente.
 function raggruppaDettaglioSpeseGenerali() {
   const gruppi = [];
   const mappa = {};
@@ -324,13 +340,50 @@ function raggruppaDettaglioSpeseGenerali() {
     if (s.gruppoId && s.gruppoId.startsWith("__cena_")) return;
     const gid = s.gruppoId || `__voce_singola_${i}`;
     if (!mappa[gid]) {
-      const g = { gruppoId: gid, descrizione: s.descrizione, isNE: !!s.quote, pagatori: [], quote: s.quoteCalcolate || {} };
+      const g = { gruppoId: gid, descrizione: s.descrizione, isNE: !!s.quote, pagatori: [], quote: s.quote || null, partecipanti: s.partecipanti || [] };
       mappa[gid] = g;
       gruppi.push(g);
     }
     mappa[gid].pagatori.push({ nome: s.nome, importo: s.importo });
   });
   return gruppi;
+}
+
+// Tabella unica di riepilogo per una singola spesa (equa o non equa): Partecipanti |
+// Ha pagato | Ha speso | Centesimini | Solata | Controsolata | Saldo, più i rimborsi
+// consigliati per pareggiare solo quella spesa, ed eventuale messaggio di solata/controsolata.
+function renderRiepilogoGruppoSpesa(container, g) {
+  const r = calcolaRiepilogoGruppoSpesa(g);
+  let html = `<div class="table-wrap"><table class="cena-table"><thead><tr>
+    <th>Partecipanti</th><th class="num">Ha pagato</th><th class="num">Ha speso</th>
+    <th class="num">Centesimini</th><th class="num">Solata</th><th class="num">Controsolata</th><th class="num">Saldo</th>
+    </tr></thead><tbody>`;
+  r.partecipanti.forEach(nome => {
+    const saldo = r.saldi[nome] || 0;
+    const cls = saldo > 0.01 ? "row-green" : saldo < -0.01 ? "row-red" : "";
+    const centStr = formatEspressioneContributi(r.centesiminiDettaglio[nome]) || (r.centesimini[nome] ? r.centesimini[nome].toFixed(2) : "");
+    html += `<tr class="${cls}"><td>${escapeHtml(nome)}</td>
+      <td class="num">${r.pagato[nome] ? euro(r.pagato[nome]) : ""}</td>
+      <td class="num">${euro(r.dovutoFinale[nome] || 0)}</td>
+      <td class="num">${centStr}</td>
+      <td class="num">${r.solata[nome] ? euro(r.solata[nome]) : ""}</td>
+      <td class="num">${r.controsolata[nome] ? euro(r.controsolata[nome]) : ""}</td>
+      <td class="num"><strong>${euro(saldo)}</strong></td></tr>`;
+  });
+  html += `<tr class="tot-row"><td><strong>Totale</strong></td><td class="num">${euro(r.totali.pagato)}</td><td class="num">${euro(r.totali.dovuto)}</td><td></td><td></td><td></td><td class="num">${euro(r.totali.pagato - r.totali.dovuto)}</td></tr>`;
+  html += `</tbody></table></div>`;
+
+  html += messaggioEventoSolata(r.eventoSolata);
+
+  html += `<h5>Rimborsi consigliati per pareggiare i conti di questa spesa</h5>`;
+  if (r.transazioni.length === 0) {
+    html += "<p><em>Nessun rimborso necessario</em></p>";
+  } else {
+    html += `<div class="table-wrap"><table class="cena-table"><thead><tr><th>Da</th><th>A</th><th>Importo</th></tr></thead><tbody>`;
+    r.transazioni.forEach(t => html += `<tr><td>${escapeHtml(t.da)}</td><td>${escapeHtml(t.a)}</td><td class="num">${euro(t.importo)}</td></tr>`);
+    html += "</tbody></table></div>";
+  }
+  container.innerHTML = html;
 }
 
 function renderSpeseDettaglio() {
@@ -342,19 +395,12 @@ function renderSpeseDettaglio() {
   gruppi.forEach(g => {
     const totalePagato = g.pagatori.reduce((a, p) => a + p.importo, 0);
     const wrap = el("details", "cena-block");
-    const righePagatori = g.pagatori
-      .sort((a, b) => a.nome.toLowerCase().localeCompare(b.nome.toLowerCase()))
-      .map(p => `<tr><td>${escapeHtml(p.nome)}</td><td class="num">${euro(p.importo)}</td></tr>`).join("");
-    const nomiQuote = Object.keys(g.quote).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-    const righeQuote = nomiQuote.map(n => `<tr><td>${escapeHtml(n)}</td><td class="num">${euro(g.quote[n])}</td></tr>`).join("");
-    wrap.innerHTML = `<summary>${escapeHtml(g.descrizione)} — ${euro(totalePagato)}${g.isNE ? "" : " (divisa in parti uguali)"}</summary>
+    wrap.innerHTML = `<summary>${escapeHtml(baseTitolo(g.descrizione))} — ${euro(totalePagato)}${g.isNE ? " [NE]" : " (divisa in parti uguali)"}</summary>
       <div class="cena-body">
-        <h5>Chi ha anticipato</h5>
-        <div class="table-wrap"><table class="cena-table"><thead><tr><th>Persona</th><th class="num">Importo</th></tr></thead><tbody>${righePagatori}</tbody></table></div>
-        <h5>Quota dovuta da ciascun partecipante</h5>
-        <div class="table-wrap"><table class="cena-table"><thead><tr><th>Persona</th><th class="num">Quota</th></tr></thead><tbody>${righeQuote}</tbody></table></div>
+        <div class="tbl-riepilogo-spesa"></div>
       </div>`;
     container.appendChild(wrap);
+    renderRiepilogoGruppoSpesa(wrap.querySelector(".tbl-riepilogo-spesa"), g);
   });
 }
 
@@ -368,12 +414,10 @@ function renderAll() {
   renderTransazioni();
   renderCredenziali();
   renderCene();
-  renderDettaglioRiepilogo();
   renderSpeseDettaglio();
   populateFormSelects();
-  refreshSpesaNEPartecipantiCheckboxes();
-  refreshPagatoriRighe("#f-spesa-pagatori", "#status-spesa-tot");
-  refreshPagatoriRighe("#f-spesa-ne-pagatori", "#status-spesa-ne-pagatori-tot");
+  refreshSpesaPartecipantiCheckboxes();
+  refreshSpesaPagatoriCheckboxes();
   refreshCenaPersoneCheckboxes();
   renderListaPersone();
   renderListaSpese();
@@ -385,10 +429,6 @@ function renderAll() {
 // ============================================================
 // GESTIONE (form -> GitHub API)
 // ============================================================
-
-// (la vecchia refreshSpesaNERighe basata su righe con checkbox incorporata è stata
-// sostituita da refreshSpesaNEPartecipantiCheckboxes + renderSpesaNERighe, più sotto,
-// che riusano lo stesso pattern "checkbox persone -> righe dinamiche" delle cene)
 
 function populateFormSelects() {
   const persone = [...STATE.persone].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
@@ -435,7 +475,6 @@ function getCheckedValues(container) {
 
 // ---------- STATO DI MODIFICA (edit in corso) ----------
 let editingSpesaGruppoId = null;
-let editingSpesaNEGruppoId = null;
 let editingRimborsoIndex = null;
 let editingCenaIndex = null;
 let editingCredenzialeIndex = null;
@@ -573,7 +612,7 @@ function raggruppaSpese() {
   STATE.spese.forEach((s, i) => {
     const gid = s.gruppoId || `__idx_${i}`;
     if (!mappa[gid]) {
-      const g = { gruppoId: gid, voci: [], isNE: !!s.quote, descrizione: s.descrizione, partecipanti: s.partecipanti || [] };
+      const g = { gruppoId: gid, voci: [], isNE: !!s.quote, descrizione: s.descrizione, partecipanti: s.partecipanti || [], quote: s.quote || null };
       mappa[gid] = g;
       gruppi.push(g);
     }
@@ -591,17 +630,17 @@ function renderListaSpese() {
   gruppi.forEach(g => {
     const chiPaga = g.voci.map(s => `${escapeHtml(s.nome)} (${euro(s.importo)})`).join(", ");
     const part = formatPartecipanti(g.partecipanti);
-    const isEditing = editingSpesaGruppoId === g.gruppoId || editingSpesaNEGruppoId === g.gruppoId;
+    const isEditing = editingSpesaGruppoId === g.gruppoId;
     const row = el("div", "list-row" + (isEditing ? " editing" : ""));
     row.innerHTML = `
-      <div class="list-main">${chiPaga} — ${escapeHtml(g.descrizione)} <strong>${euro(g.totale)}</strong><br><span class="list-sub">Partecipanti: ${escapeHtml(part)}</span></div>
+      <div class="list-main">${chiPaga} — ${escapeHtml(baseTitolo(g.descrizione))}${g.isNE ? " [NE]" : ""} <strong>${euro(g.totale)}</strong><br><span class="list-sub">Partecipanti: ${escapeHtml(part)}</span></div>
       <div class="list-actions">
         <button class="btn-icon edit" type="button">Modifica</button>
         <button class="btn-icon delete" type="button">Elimina</button>
       </div>`;
-    row.querySelector(".edit").addEventListener("click", () => g.isNE ? modificaSpesaNE(g.gruppoId) : modificaSpesa(g.gruppoId));
+    row.querySelector(".edit").addEventListener("click", () => modificaSpesa(g.gruppoId));
     row.querySelector(".delete").addEventListener("click", async () => {
-      if (!confirm(`Eliminare la spesa "${g.descrizione}" (${euro(g.totale)})?`)) return;
+      if (!confirm(`Eliminare la spesa "${baseTitolo(g.descrizione)}" (${euro(g.totale)})?`)) return;
       try {
         const nuovoElenco = STATE.spese.filter((s, i) => (s.gruppoId || `__idx_${i}`) !== g.gruppoId);
         await GH.writeJSON("data/spese.json", nuovoElenco, `Rimuove spesa: ${g.descrizione}`);
@@ -610,34 +649,6 @@ function renderListaSpese() {
     });
     box.appendChild(row);
   });
-}
-
-function modificaSpesa(gruppoId) {
-  const voci = STATE.spese.filter((s, i) => (s.gruppoId || `__idx_${i}`) === gruppoId);
-  if (voci.length === 0) return;
-  editingSpesaGruppoId = gruppoId;
-  document.querySelector("#f-spesa-desc").value = voci[0].descrizione;
-  const presetPagatori = {};
-  voci.forEach(v => presetPagatori[v.nome] = v.importo);
-  buildPagatoriRighe("#f-spesa-pagatori", presetPagatori, "#status-spesa-tot");
-  const box = document.querySelector("#f-spesa-partecipanti");
-  Array.from(box.querySelectorAll("input[type=checkbox]")).forEach(cb => {
-    cb.checked = (voci[0].partecipanti || []).includes(cb.value);
-  });
-  document.querySelector("#sec-spesa").classList.remove("collapsed");
-  document.querySelector("#btn-spesa-submit").textContent = "Salva modifiche";
-  document.querySelector("#btn-spesa-annulla").style.display = "inline-block";
-  safeScrollIntoView(document.querySelector("#f-spesa-form"));
-  renderListaSpese();
-}
-
-function annullaModificaSpesa() {
-  editingSpesaGruppoId = null;
-  document.querySelector("#f-spesa-form").reset();
-  buildPagatoriRighe("#f-spesa-pagatori", {}, "#status-spesa-tot");
-  document.querySelector("#btn-spesa-submit").textContent = "Aggiungi spesa";
-  document.querySelector("#btn-spesa-annulla").style.display = "none";
-  renderListaSpese();
 }
 
 function renderListaRimborsi() {
@@ -799,176 +810,153 @@ async function submitPersona(e) {
   } catch (err) { setStatus("#status-persona", err.message, true); }
 }
 
-// --- Aggiungi spesa (una o più persone possono aver anticipato i soldi) ---
-async function submitSpesa(e) {
-  e.preventDefault();
-  const descrizione = document.querySelector("#f-spesa-desc").value.trim();
-  if (!descrizione) { setStatus("#status-spesa", "Inserisci una descrizione.", true); return; }
-  if (!validaOAvvisa(descrizione, "Descrizione")) return;
+// ============================================================
+// AGGIUNGI SPESA (unificata: equa o non equa)
+// ============================================================
+// Componente riusato due volte in questo form:
+//  1) i PARTECIPANTI alla spesa: checkbox-list, tutte spuntate di default;
+//  2) CHI HA ANTICIPATO i soldi: stessa identica checkbox-list, ma NON spuntata di
+//     default; per ciascuna persona spuntata compare poi una riga con l'importo pagato.
+// Lo stesso pattern (checkbox-list -> righe dinamiche per i soli spuntati, con cache dei
+// valori già inseriti) è usato anche per le QUOTE nel caso di divisione non equa.
 
-  const pagatori = leggiPagatori("#f-spesa-pagatori");
-  const nomiPagatori = Object.keys(pagatori);
-  if (nomiPagatori.length === 0) { setStatus("#status-spesa", "Seleziona almeno un pagatore e il relativo importo.", true); return; }
-  for (const n of nomiPagatori) {
-    if (!(pagatori[n] > 0)) { setStatus("#status-spesa", `L'importo pagato da ${n} deve essere un numero maggiore di zero.`, true); return; }
-  }
+let spesaPartecipantiKnownNames = new Set();
+let spesaPagatoriKnownNames = new Set();
+let spesaQuoteDati = {};   // nome -> quota (usato solo in modalità non equa)
+let spesaPagatoDati = {};  // nome -> importo pagato
 
-  const partecipanti = getCheckedValues(document.querySelector("#f-spesa-partecipanti"));
-
-  try {
-    const gruppoId = editingSpesaGruppoId || generaId();
-    const nuoveVoci = nomiPagatori.map(nome => ({ nome, descrizione, importo: pagatori[nome], partecipanti, gruppoId }));
-    let nuovoElenco;
-    let msg;
-    if (editingSpesaGruppoId) {
-      nuovoElenco = STATE.spese.filter((s, i) => (s.gruppoId || `__idx_${i}`) !== editingSpesaGruppoId).concat(nuoveVoci);
-      msg = `Modifica spesa: ${descrizione}`;
-    } else {
-      nuovoElenco = [...STATE.spese, ...nuoveVoci];
-      msg = `Aggiunge spesa: ${descrizione}`;
-    }
-    await GH.writeJSON("data/spese.json", nuovoElenco, msg);
-    setStatus("#status-spesa", (editingSpesaGruppoId ? "Spesa modificata!" : "Spesa aggiunta!") + " Ricarico i dati…", false);
-    annullaModificaSpesa();
-    await loadAllData(); renderAll();
-  } catch (err) { setStatus("#status-spesa", err.message, true); }
-}
-
-// ---------- CHI HA PAGATO (uno o più) — componente riusato da spesa equa e spesa NE ----------
-// Ogni riga è una persona con una checkbox ("ha pagato") + l'importo che ha anticipato.
-function buildPagatoriRighe(containerId, preselezionati, statusId) {
-  const box = document.querySelector(containerId);
-  if (!box) return;
-  const persone = [...STATE.persone].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-  const preset = preselezionati || {};
-  box.innerHTML = persone.map(p => {
-    const checked = Object.prototype.hasOwnProperty.call(preset, p) ? "checked" : "";
-    const valore = preset[p] !== undefined ? preset[p] : "";
-    return `<div class="spesa-ne-row" data-nome="${escapeHtml(p)}">
-      <label class="chk"><input type="checkbox" class="pag-check" ${checked}> ${escapeHtml(p)}</label>
-      <input type="number" step="0.01" min="0" class="pag-importo" placeholder="Importo pagato €" value="${valore}">
-      <span></span>
-    </div>`;
-  }).join("");
-  const aggiorna = () => aggiornaTotalePagatori(containerId, statusId);
-  aggiorna();
-  box.querySelectorAll(".pag-importo, .pag-check").forEach(inp => {
-    inp.addEventListener("input", aggiorna);
-    inp.addEventListener("change", aggiorna);
-  });
-}
-
-function leggiPagatori(containerId) {
-  const righe = Array.from(document.querySelectorAll(`${containerId} .spesa-ne-row`));
-  const pagatori = {};
-  righe.forEach(row => {
-    if (!row.querySelector(".pag-check").checked) return;
-    const nome = row.dataset.nome;
-    const v = parseFloat(row.querySelector(".pag-importo").value);
-    pagatori[nome] = isNaN(v) ? 0 : v;
-  });
-  return pagatori;
-}
-
-function aggiornaTotalePagatori(containerId, statusId) {
-  const pagatori = leggiPagatori(containerId);
-  const tot = Object.values(pagatori).reduce((a, b) => a + b, 0);
-  const box = document.querySelector(statusId);
-  if (box) box.textContent = `Totale pagato: ${euro(tot)}`;
-}
-
-// Ricostruisce le righe dei pagatori quando cambia l'elenco delle persone, preservando
-// le selezioni/importi già inseriti (stesso pattern usato per le quote della spesa NE).
-function refreshPagatoriRighe(containerId, statusId) {
-  const box = document.querySelector(containerId);
-  if (!box) return;
-  const preset = {};
-  box.querySelectorAll(".spesa-ne-row").forEach(row => {
-    if (row.querySelector(".pag-check").checked) {
-      preset[row.dataset.nome] = row.querySelector(".pag-importo").value;
-    }
-  });
-  buildPagatoriRighe(containerId, preset, statusId);
-}
-
-// --- Aggiungi spesa non equa [NE] ---
-// A differenza della spesa normale (divisa in parti uguali tra i partecipanti), qui
-// si indica manualmente quanto deve ciascun partecipante: l'importo totale della spesa
-// viene calcolato automaticamente come somma delle quote inserite. Anche qui una o più
-// persone possono aver anticipato i soldi.
-
-// Cache dei valori "quota" già inseriti, e insieme delle persone già viste nella
-// checkbox-list: stesso pattern usato per le persone alla cena (cenaPersoneDati /
-// cenaCheckboxKnownNames), così le persone nuove vengono spuntate di default e i
-// valori già inseriti non si perdono quando la lista persone cambia altrove.
-let spesaNEQuoteDati = {};
-let spesaNECheckboxKnownNames = new Set();
-
-function catturaSpesaNEQuoteDati() {
-  document.querySelectorAll("#f-spesa-ne-righe .spesa-ne-row").forEach(row => {
+function catturaSpesaQuoteDati() {
+  document.querySelectorAll("#f-spesa-quote-righe .spesa-ne-row").forEach(row => {
     const nome = row.dataset.nome;
     if (!nome) return;
     const v = parseFloat(row.querySelector(".sne-quota").value);
-    spesaNEQuoteDati[nome] = isNaN(v) ? 0 : v;
+    spesaQuoteDati[nome] = isNaN(v) ? 0 : v;
   });
 }
 
-// Ricostruisce le righe "quota dovuta" SOLO per le persone attualmente spuntate come
-// partecipanti (esattamente come cena-persone-rows segue cena-persone-checkboxes).
-function renderSpesaNERighe() {
-  const box = document.querySelector("#f-spesa-ne-righe");
+function catturaSpesaPagatoDati() {
+  document.querySelectorAll("#f-spesa-pagatori-righe .spesa-ne-row").forEach(row => {
+    const nome = row.dataset.nome;
+    if (!nome) return;
+    const v = parseFloat(row.querySelector(".pag-importo").value);
+    spesaPagatoDati[nome] = isNaN(v) ? 0 : v;
+  });
+}
+
+function spesaModoAttuale() {
+  const r = document.querySelector('input[name="f-spesa-modo"]:checked');
+  return r ? r.value : "equa";
+}
+
+function aggiornaVisibilitaModoSpesa() {
+  const box = document.querySelector("#f-spesa-quote-box");
+  if (box) box.style.display = spesaModoAttuale() === "nonequa" ? "" : "none";
+}
+
+// Righe "quota dovuta" per i soli partecipanti attualmente spuntati (solo modalità non equa)
+function renderSpesaQuoteRighe() {
+  const box = document.querySelector("#f-spesa-quote-righe");
   if (!box) return;
   box.innerHTML = "";
-  const checkboxBox = document.querySelector("#f-spesa-ne-partecipanti");
+  const checkboxBox = document.querySelector("#f-spesa-partecipanti");
   const checked = checkboxBox ? getCheckedValues(checkboxBox).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())) : [];
   checked.forEach(nome => {
     const row = el("div", "spesa-ne-row");
     row.dataset.nome = nome;
-    const valore = spesaNEQuoteDati[nome] !== undefined ? spesaNEQuoteDati[nome] : "";
+    const valore = spesaQuoteDati[nome] !== undefined ? spesaQuoteDati[nome] : "";
     row.innerHTML = `
       <div class="cp-persona-titolo" style="margin:0;">${escapeHtml(nome)}</div>
       <input type="number" step="0.01" min="0" class="sne-quota" placeholder="Quota €" value="${valore}">
       <span></span>`;
-    row.querySelector(".sne-quota").addEventListener("input", aggiornaTotaleSpesaNE);
+    row.querySelector(".sne-quota").addEventListener("input", () => { catturaSpesaQuoteDati(); aggiornaTotaliSpesaForm(); });
     box.appendChild(row);
   });
-  aggiornaTotaleSpesaNE();
+  aggiornaTotaliSpesaForm();
 }
 
-function onSpesaNEPartecipantiChange() {
-  catturaSpesaNEQuoteDati();
-  renderSpesaNERighe();
+function onSpesaPartecipantiChange() {
+  catturaSpesaQuoteDati();
+  renderSpesaQuoteRighe();
 }
 
-// Ricostruisce la checkbox-list dei partecipanti alla spesa non equa. Come per le cene,
-// le persone nuove vengono spuntate di default (tutte pinnate); chi era già presente
-// mantiene lo stato di spunta attuale.
-function refreshSpesaNEPartecipantiCheckboxes() {
-  const box = document.querySelector("#f-spesa-ne-partecipanti");
+// Checkbox-list dei partecipanti alla spesa: le persone nuove vengono spuntate di
+// default (come richiesto), chi era già presente mantiene lo stato di spunta attuale.
+function refreshSpesaPartecipantiCheckboxes() {
+  const box = document.querySelector("#f-spesa-partecipanti");
   if (!box) return;
-  catturaSpesaNEQuoteDati();
+  catturaSpesaQuoteDati();
   const attuali = new Set(getCheckedValues(box));
   const ordinati = [...STATE.persone].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
   box.innerHTML = ordinati.map(p => {
-    const spuntata = spesaNECheckboxKnownNames.has(p) ? attuali.has(p) : true;
+    const spuntata = spesaPartecipantiKnownNames.has(p) ? attuali.has(p) : true;
     return `<label class="chk"><input type="checkbox" value="${escapeHtml(p)}" ${spuntata ? "checked" : ""}> ${escapeHtml(p)}</label>`;
   }).join("");
-  spesaNECheckboxKnownNames = new Set(ordinati);
-  box.querySelectorAll("input[type=checkbox]").forEach(cb => cb.addEventListener("change", onSpesaNEPartecipantiChange));
-  renderSpesaNERighe();
+  spesaPartecipantiKnownNames = new Set(ordinati);
+  box.querySelectorAll("input[type=checkbox]").forEach(cb => cb.addEventListener("change", onSpesaPartecipantiChange));
+  renderSpesaQuoteRighe();
 }
 
-// Imposta esplicitamente quali persone sono spuntate (usato in modifica/reset)
-function setSpesaNEPersoneSelezionate(nomi) {
-  const box = document.querySelector("#f-spesa-ne-partecipanti");
+function setSpesaPartecipantiSelezionati(nomi) {
+  const box = document.querySelector("#f-spesa-partecipanti");
   if (!box) return;
   const set = new Set(nomi);
   box.querySelectorAll("input[type=checkbox]").forEach(cb => { cb.checked = set.has(cb.value); });
-  renderSpesaNERighe();
+  renderSpesaQuoteRighe();
 }
 
-function leggiQuoteSpesaNE() {
-  const righe = Array.from(document.querySelectorAll("#f-spesa-ne-righe .spesa-ne-row"));
+// Righe "importo pagato" per i soli pagatori attualmente spuntati
+function renderSpesaPagatoriRighe() {
+  const box = document.querySelector("#f-spesa-pagatori-righe");
+  if (!box) return;
+  box.innerHTML = "";
+  const checkboxBox = document.querySelector("#f-spesa-pagatori-check");
+  const checked = checkboxBox ? getCheckedValues(checkboxBox).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())) : [];
+  checked.forEach(nome => {
+    const row = el("div", "spesa-ne-row");
+    row.dataset.nome = nome;
+    const valore = spesaPagatoDati[nome] !== undefined ? spesaPagatoDati[nome] : "";
+    row.innerHTML = `
+      <div class="cp-persona-titolo" style="margin:0;">${escapeHtml(nome)}</div>
+      <input type="number" step="0.01" min="0" class="pag-importo" placeholder="Importo pagato €" value="${valore}">
+      <span></span>`;
+    row.querySelector(".pag-importo").addEventListener("input", () => { catturaSpesaPagatoDati(); aggiornaTotaliSpesaForm(); });
+    box.appendChild(row);
+  });
+  aggiornaTotaliSpesaForm();
+}
+
+function onSpesaPagatoriChange() {
+  catturaSpesaPagatoDati();
+  renderSpesaPagatoriRighe();
+}
+
+// Checkbox-list di chi ha anticipato i soldi: stesso pattern di quella dei partecipanti,
+// ma le persone nuove partono NON spuntate (di default nessuno ha pagato).
+function refreshSpesaPagatoriCheckboxes() {
+  const box = document.querySelector("#f-spesa-pagatori-check");
+  if (!box) return;
+  catturaSpesaPagatoDati();
+  const attuali = new Set(getCheckedValues(box));
+  const ordinati = [...STATE.persone].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  box.innerHTML = ordinati.map(p => {
+    const spuntata = spesaPagatoriKnownNames.has(p) ? attuali.has(p) : false;
+    return `<label class="chk"><input type="checkbox" value="${escapeHtml(p)}" ${spuntata ? "checked" : ""}> ${escapeHtml(p)}</label>`;
+  }).join("");
+  spesaPagatoriKnownNames = new Set(ordinati);
+  box.querySelectorAll("input[type=checkbox]").forEach(cb => cb.addEventListener("change", onSpesaPagatoriChange));
+  renderSpesaPagatoriRighe();
+}
+
+function setSpesaPagatoriSelezionati(nomi) {
+  const box = document.querySelector("#f-spesa-pagatori-check");
+  if (!box) return;
+  const set = new Set(nomi);
+  box.querySelectorAll("input[type=checkbox]").forEach(cb => { cb.checked = set.has(cb.value); });
+  renderSpesaPagatoriRighe();
+}
+
+function leggiSpesaQuote() {
+  const righe = Array.from(document.querySelectorAll("#f-spesa-quote-righe .spesa-ne-row"));
   const quote = {};
   righe.forEach(row => {
     const nome = row.dataset.nome;
@@ -978,82 +966,125 @@ function leggiQuoteSpesaNE() {
   return quote;
 }
 
-function aggiornaTotaleSpesaNE() {
-  const quote = leggiQuoteSpesaNE();
-  const tot = Object.values(quote).reduce((a, b) => a + b, 0);
-  const box = document.querySelector("#status-spesa-ne-tot");
-  if (box) box.textContent = `Totale dovuto (somma delle quote): ${euro(tot)}`;
+function leggiSpesaPagatori() {
+  const righe = Array.from(document.querySelectorAll("#f-spesa-pagatori-righe .spesa-ne-row"));
+  const pagatori = {};
+  righe.forEach(row => {
+    const nome = row.dataset.nome;
+    const v = parseFloat(row.querySelector(".pag-importo").value);
+    pagatori[nome] = isNaN(v) ? 0 : v;
+  });
+  return pagatori;
 }
 
-function modificaSpesaNE(gruppoId) {
+function aggiornaTotaliSpesaForm() {
+  const pagatori = leggiSpesaPagatori();
+  const totPag = Object.values(pagatori).reduce((a, b) => a + b, 0);
+  const boxPag = document.querySelector("#status-spesa-pagatori-tot");
+  if (boxPag) boxPag.textContent = `Totale anticipato: ${euro(totPag)}`;
+  if (spesaModoAttuale() === "nonequa") {
+    const quote = leggiSpesaQuote();
+    const totQuote = Object.values(quote).reduce((a, b) => a + b, 0);
+    const boxQuote = document.querySelector("#status-spesa-quote-tot");
+    if (boxQuote) boxQuote.textContent = `Totale dovuto (somma delle quote): ${euro(totQuote)}`;
+  }
+}
+
+function modificaSpesa(gruppoId) {
   const voci = STATE.spese.filter((s, i) => (s.gruppoId || `__idx_${i}`) === gruppoId);
   if (voci.length === 0) return;
-  editingSpesaNEGruppoId = gruppoId;
-  document.querySelector("#f-spesa-ne-desc").value = (voci[0].descrizione || "").replace(/\s*\[NE\]\s*$/, "");
-  const presetPagatori = {};
-  voci.forEach(v => presetPagatori[v.nome] = v.importo);
-  buildPagatoriRighe("#f-spesa-ne-pagatori", presetPagatori, "#status-spesa-ne-pagatori-tot");
-  spesaNEQuoteDati = { ...(voci[0].quote || {}) };
-  setSpesaNEPersoneSelezionate(Object.keys(voci[0].quote || {}));
-  document.querySelector("#sec-spesa-ne").classList.remove("collapsed");
-  document.querySelector("#btn-spesa-ne-submit").textContent = "Salva modifiche";
-  document.querySelector("#btn-spesa-ne-annulla").style.display = "inline-block";
-  safeScrollIntoView(document.querySelector("#f-spesa-ne-form"));
+  editingSpesaGruppoId = gruppoId;
+  const isNE = !!voci[0].quote;
+  document.querySelector("#f-spesa-titolo").value = baseTitolo(voci[0].descrizione);
+
+  setSpesaPartecipantiSelezionati(voci[0].partecipanti || []);
+
+  document.querySelector("#f-spesa-modo-equa").checked = !isNE;
+  document.querySelector("#f-spesa-modo-nonequa").checked = isNE;
+  aggiornaVisibilitaModoSpesa();
+  spesaQuoteDati = isNE ? { ...(voci[0].quote || {}) } : {};
+  renderSpesaQuoteRighe();
+
+  spesaPagatoDati = {};
+  voci.forEach(v => spesaPagatoDati[v.nome] = v.importo);
+  setSpesaPagatoriSelezionati(voci.map(v => v.nome));
+
+  document.querySelector("#sec-spesa").classList.remove("collapsed");
+  document.querySelector("#btn-spesa-submit").textContent = "Salva modifiche";
+  document.querySelector("#btn-spesa-annulla").style.display = "inline-block";
+  safeScrollIntoView(document.querySelector("#f-spesa-form"));
   renderListaSpese();
 }
 
-function annullaModificaSpesaNE() {
-  editingSpesaNEGruppoId = null;
-  document.querySelector("#f-spesa-ne-form").reset();
-  buildPagatoriRighe("#f-spesa-ne-pagatori", {}, "#status-spesa-ne-pagatori-tot");
-  spesaNEQuoteDati = {};
-  setSpesaNEPersoneSelezionate(STATE.persone); // torna al default: tutti i partecipanti spuntati
-  document.querySelector("#btn-spesa-ne-submit").textContent = "Aggiungi spesa non equa";
-  document.querySelector("#btn-spesa-ne-annulla").style.display = "none";
+function annullaModificaSpesa() {
+  editingSpesaGruppoId = null;
+  document.querySelector("#f-spesa-form").reset();
+  spesaQuoteDati = {};
+  spesaPagatoDati = {};
+  aggiornaVisibilitaModoSpesa();
+  setSpesaPartecipantiSelezionati(STATE.persone); // tutti spuntati di default
+  setSpesaPagatoriSelezionati([]); // nessuno spuntato di default
+  document.querySelector("#btn-spesa-submit").textContent = "Aggiungi spesa";
+  document.querySelector("#btn-spesa-annulla").style.display = "none";
   renderListaSpese();
 }
 
-async function submitSpesaNE(e) {
+async function submitSpesa(e) {
   e.preventDefault();
-  let descrizione = document.querySelector("#f-spesa-ne-desc").value.trim();
-  if (!descrizione) { setStatus("#status-spesa-ne", "Inserisci una descrizione.", true); return; }
-  if (!validaOAvvisa(descrizione, "Descrizione")) return;
+  let titolo = document.querySelector("#f-spesa-titolo").value.trim();
+  if (!titolo) { setStatus("#status-spesa", "Inserisci un titolo.", true); return; }
+  if (!validaOAvvisa(titolo, "Titolo spesa")) return;
 
-  const pagatori = leggiPagatori("#f-spesa-ne-pagatori");
-  const nomiPagatori = Object.keys(pagatori);
-  if (nomiPagatori.length === 0) { setStatus("#status-spesa-ne", "Seleziona almeno un pagatore e il relativo importo.", true); return; }
+  if (titoloGiaUsato(titolo, { gruppoSpesaId: editingSpesaGruppoId })) {
+    setStatus("#status-spesa", `Esiste già una spesa o una cena con il titolo "${baseTitolo(titolo)}". Scegline uno diverso.`, true);
+    return;
+  }
+
+  const partecipanti = getCheckedValues(document.querySelector("#f-spesa-partecipanti"));
+  if (partecipanti.length === 0) { setStatus("#status-spesa", "Seleziona almeno un partecipante alla spesa.", true); return; }
+
+  const pagatori = leggiSpesaPagatori();
+  const nomiPagatori = Object.keys(pagatori).filter(n => getCheckedValues(document.querySelector("#f-spesa-pagatori-check")).includes(n));
+  if (nomiPagatori.length === 0) { setStatus("#status-spesa", "Seleziona almeno una persona che ha anticipato i soldi, con il relativo importo.", true); return; }
   for (const n of nomiPagatori) {
-    if (!(pagatori[n] > 0)) { setStatus("#status-spesa-ne", `L'importo pagato da ${n} deve essere un numero maggiore di zero.`, true); return; }
+    if (!(pagatori[n] > 0)) { setStatus("#status-spesa", `L'importo pagato da ${n} deve essere un numero maggiore di zero.`, true); return; }
   }
 
-  const quote = leggiQuoteSpesaNE();
-  const partecipanti = Object.keys(quote);
-  if (partecipanti.length === 0) { setStatus("#status-spesa-ne", "Seleziona almeno un partecipante e la sua quota.", true); return; }
-  for (const n of partecipanti) {
-    if (quote[n] < 0) { setStatus("#status-spesa-ne", `La quota di ${n} non può essere negativa.`, true); return; }
+  const nonEqua = spesaModoAttuale() === "nonequa";
+  let quote = null;
+  if (nonEqua) {
+    quote = leggiSpesaQuote();
+    for (const n of partecipanti) {
+      if (!(quote[n] >= 0)) { setStatus("#status-spesa", `La quota di ${n} non può essere negativa.`, true); return; }
+    }
+    const totQuote = Object.values(quote).reduce((a, b) => a + b, 0);
+    if (totQuote <= 0) { setStatus("#status-spesa", "La somma delle quote deve essere maggiore di zero.", true); return; }
+    titolo = baseTitolo(titolo) + " [NE]";
+  } else {
+    titolo = baseTitolo(titolo);
   }
-  const totQuote = Object.values(quote).reduce((a, b) => a + b, 0);
-  if (totQuote <= 0) { setStatus("#status-spesa-ne", "La somma delle quote deve essere maggiore di zero.", true); return; }
-
-  descrizione = descrizione.replace(/\s*\[NE\]\s*$/, "") + " [NE]";
 
   try {
-    const gruppoId = editingSpesaNEGruppoId || generaId();
-    const nuoveVoci = nomiPagatori.map(nome => ({ nome, descrizione, importo: pagatori[nome], partecipanti, quote, gruppoId }));
+    const gruppoId = editingSpesaGruppoId || generaId();
+    const nuoveVoci = nomiPagatori.map(nome => {
+      const voce = { nome, descrizione: titolo, importo: pagatori[nome], partecipanti, gruppoId };
+      if (nonEqua) voce.quote = quote;
+      return voce;
+    });
     let nuovoElenco;
     let msg;
-    if (editingSpesaNEGruppoId) {
-      nuovoElenco = STATE.spese.filter((s, i) => (s.gruppoId || `__idx_${i}`) !== editingSpesaNEGruppoId).concat(nuoveVoci);
-      msg = `Modifica spesa non equa: ${descrizione}`;
+    if (editingSpesaGruppoId) {
+      nuovoElenco = STATE.spese.filter((s, i) => (s.gruppoId || `__idx_${i}`) !== editingSpesaGruppoId).concat(nuoveVoci);
+      msg = `Modifica spesa: ${titolo}`;
     } else {
       nuovoElenco = [...STATE.spese, ...nuoveVoci];
-      msg = `Aggiunge spesa non equa: ${descrizione}`;
+      msg = `Aggiunge spesa: ${titolo}`;
     }
     await GH.writeJSON("data/spese.json", nuovoElenco, msg);
-    setStatus("#status-spesa-ne", (editingSpesaNEGruppoId ? "Spesa modificata!" : "Spesa aggiunta!") + " Ricarico i dati…", false);
-    annullaModificaSpesaNE();
+    setStatus("#status-spesa", (editingSpesaGruppoId ? "Spesa modificata!" : "Spesa aggiunta!") + " Ricarico i dati…", false);
+    annullaModificaSpesa();
     await loadAllData(); renderAll();
-  } catch (err) { setStatus("#status-spesa-ne", err.message, true); }
+  } catch (err) { setStatus("#status-spesa", err.message, true); }
 }
 
 // --- Aggiungi rimborso ---
@@ -1218,6 +1249,11 @@ async function submitCena(e) {
   const titolo = document.querySelector("#f-cena-titolo").value.trim();
   if (!titolo) { setStatus("#status-cena", "Inserisci un titolo.", true); return; }
   if (!validaOAvvisa(titolo, "Titolo cena")) return;
+
+  if (titoloGiaUsato(titolo, { indiceCena: editingCenaIndex })) {
+    setStatus("#status-cena", `Esiste già una cena o una spesa con il titolo "${baseTitolo(titolo)}". Scegline uno diverso.`, true);
+    return;
+  }
 
   const sconti = {};
   for (const c of CAT_INPUT) {
@@ -1403,7 +1439,7 @@ function updateTokenStatus() {
 function buildScontiGrid() {
   const box = document.querySelector("#sconti-grid-container");
   box.innerHTML = CAT_INPUT.map(c =>
-    `<label>${CAT_LABELS[c]} <input type="number" min="0" max="100" id="f-sconto-${c}" value="0" style="width:60px"></label>`
+    `<div class="cp-field"><label>${CAT_LABELS[c]}</label><input type="number" min="0" max="100" id="f-sconto-${c}" value="0"></div>`
   ).join("");
 }
 
@@ -1411,19 +1447,21 @@ function buildScontiGrid() {
 document.addEventListener("DOMContentLoaded", async () => {
   buildScontiGrid();
   buildPersonaNomiInputs(1);
-  buildPagatoriRighe("#f-spesa-pagatori", {}, "#status-spesa-tot");
-  buildPagatoriRighe("#f-spesa-ne-pagatori", {}, "#status-spesa-ne-pagatori-tot");
   renderHomeLink();
   await loadAllData();
   renderAll();
+  aggiornaVisibilitaModoSpesa();
+  setSpesaPagatoriSelezionati([]); // di default nessun pagatore spuntato
 
   document.querySelector("#f-persona-quante").addEventListener("change", (e) => {
     buildPersonaNomiInputs(parseInt(e.target.value, 10) || 1);
   });
   document.querySelector("#f-persona-form").addEventListener("submit", submitPersona);
   document.querySelector("#f-spesa-form").addEventListener("submit", submitSpesa);
-  document.querySelector("#f-spesa-ne-form").addEventListener("submit", submitSpesaNE);
-  document.querySelector("#btn-spesa-ne-annulla").addEventListener("click", annullaModificaSpesaNE);
+  document.querySelector("#btn-spesa-annulla").addEventListener("click", annullaModificaSpesa);
+  document.querySelectorAll('input[name="f-spesa-modo"]').forEach(r => {
+    r.addEventListener("change", () => { aggiornaVisibilitaModoSpesa(); aggiornaTotaliSpesaForm(); });
+  });
   document.querySelector("#f-rimborso-form").addEventListener("submit", submitRimborso);
   document.querySelector("#f-cena-form").addEventListener("submit", submitCena);
   document.querySelector("#f-credenziale-form").addEventListener("submit", submitCredenziale);
@@ -1431,14 +1469,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.querySelector("#btn-cred-annulla").addEventListener("click", annullaModificaCredenziale);
   aggiornaCampiCredenziale();
   document.querySelector("#btn-add-cena-spesa").addEventListener("click", () => addCenaSpesaRow());
-  document.querySelector("#btn-spesa-annulla").addEventListener("click", annullaModificaSpesa);
   document.querySelector("#btn-rimborso-annulla").addEventListener("click", annullaModificaRimborso);
   document.querySelector("#btn-cena-annulla").addEventListener("click", annullaModificaCena);
   document.querySelector("#cena-persone-details-toggle").addEventListener("click", () => {
     document.querySelector("#cena-persone-details").classList.toggle("collapsed");
   });
 
-  // Sezioni estendibili "Aggiungi spesa / spesa non equa / rimborso / cena"
+  // Sezioni estendibili "Aggiungi spesa / rimborso / cena"
   document.querySelectorAll(".collapsible-header[data-toggle]").forEach(header => {
     header.addEventListener("click", () => {
       document.querySelector("#" + header.dataset.toggle).classList.toggle("collapsed");
