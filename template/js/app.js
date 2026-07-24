@@ -217,8 +217,8 @@ function fmtVal(v, cat, sconti) {
   return s.toFixed(2);
 }
 function fmtCellCondivisa(vInd, vCond, cat, sconti) {
-  const ind = vInd > 0 ? fmtVal(vInd, cat, sconti) : "";
-  const cond = vCond > 0 ? fmtVal(vCond, cat, sconti) : "";
+  const ind = vInd !== 0 ? fmtVal(vInd, cat, sconti) : "";
+  const cond = vCond !== 0 ? fmtVal(vCond, cat, sconti) : "";
   if (ind && cond) return ind + " + " + cond;
   return ind || cond || "";
 }
@@ -340,7 +340,7 @@ function raggruppaDettaglioSpeseGenerali() {
     if (s.gruppoId && s.gruppoId.startsWith("__cena_")) return;
     const gid = s.gruppoId || `__voce_singola_${i}`;
     if (!mappa[gid]) {
-      const g = { gruppoId: gid, descrizione: s.descrizione, isNE: !!s.quote, pagatori: [], quote: s.quote || null, partecipanti: s.partecipanti || [] };
+      const g = { gruppoId: gid, descrizione: s.descrizione, isNE: !!s.quote, pagatori: [], partecipanti: s.partecipanti || [] };
       mappa[gid] = g;
       gruppi.push(g);
     }
@@ -352,8 +352,14 @@ function raggruppaDettaglioSpeseGenerali() {
 // Tabella unica di riepilogo per una singola spesa (equa o non equa): Partecipanti |
 // Ha pagato | Ha speso | Centesimini | Solata | Controsolata | Saldo, più i rimborsi
 // consigliati per pareggiare solo quella spesa, ed eventuale messaggio di solata/controsolata.
+// IMPORTANTE: per le spese non eque riusa lo STESSO riepilogo già calcolato una volta in
+// calcolaStatoGlobale (STATE.stato.riepilogoGruppi), invece di richiamare di nuovo
+// calcolaRiepilogoGruppoSpesa da zero: altrimenti questa tabella potrebbe mostrare numeri
+// diversi da quelli usati per "Totali per persona" e "Transazioni da effettuare" nel Riepilogo.
 function renderRiepilogoGruppoSpesa(container, g) {
-  const r = calcolaRiepilogoGruppoSpesa(g);
+  const r = (g.isNE && STATE.stato.riepilogoGruppi && STATE.stato.riepilogoGruppi[g.gruppoId])
+    ? STATE.stato.riepilogoGruppi[g.gruppoId]
+    : calcolaRiepilogoGruppoSpesa(g);
   let html = `<div class="table-wrap"><table class="cena-table"><thead><tr>
     <th>Partecipanti</th><th class="num">Ha pagato</th><th class="num">Ha speso</th>
     <th class="num">Centesimini</th><th class="num">Solata</th><th class="num">Controsolata</th><th class="num">Saldo</th>
@@ -370,7 +376,14 @@ function renderRiepilogoGruppoSpesa(container, g) {
       <td class="num">${r.controsolata[nome] ? euro(r.controsolata[nome]) : ""}</td>
       <td class="num"><strong>${euro(saldo)}</strong></td></tr>`;
   });
-  html += `<tr class="tot-row"><td><strong>Totale</strong></td><td class="num">${euro(r.totali.pagato)}</td><td class="num">${euro(r.totali.dovuto)}</td><td></td><td></td><td></td><td class="num">${euro(r.totali.pagato - r.totali.dovuto)}</td></tr>`;
+  const totCentesimini = r.partecipanti.reduce((a, n) => a + (r.centesimini[n] || 0), 0);
+  const totSolata = r.partecipanti.reduce((a, n) => a + (r.solata[n] || 0), 0);
+  const totControsolata = r.partecipanti.reduce((a, n) => a + (r.controsolata[n] || 0), 0);
+  html += `<tr class="tot-row"><td><strong>Totale</strong></td><td class="num">${euro(r.totali.pagato)}</td><td class="num">${euro(r.totali.dovuto)}</td>
+    <td class="num">${totCentesimini ? euro(totCentesimini) : ""}</td>
+    <td class="num">${totSolata ? euro(totSolata) : ""}</td>
+    <td class="num">${totControsolata ? euro(totControsolata) : ""}</td>
+    <td class="num">${euro(r.totali.pagato - r.totali.dovuto)}</td></tr>`;
   html += `</tbody></table></div>`;
 
   html += messaggioEventoSolata(r.eventoSolata);
