@@ -71,12 +71,18 @@ function calcolaSolataControsolata(diff, partecipanti, totaleCorrente) {
   partecipanti.forEach((nome, i) => { valori[nome] = positivo ? shares[i] : -shares[i]; });
   let restoInfo = null;
   if (resto > 0.001) {
-    let minNome = partecipanti[0];
+    // Solata (si aggiunge): il centesimo residuo va a chi sta spendendo di MENO.
+    // Controsolata (si toglie): il centesimo residuo va tolto a chi sta spendendo di PIÙ.
+    let scelto = partecipanti[0];
     partecipanti.forEach(nome => {
-      if ((totaleCorrente[nome] || 0) < (totaleCorrente[minNome] || 0)) minNome = nome;
+      if (positivo) {
+        if ((totaleCorrente[nome] || 0) < (totaleCorrente[scelto] || 0)) scelto = nome;
+      } else {
+        if ((totaleCorrente[nome] || 0) > (totaleCorrente[scelto] || 0)) scelto = nome;
+      }
     });
     const valResto = positivo ? resto : -resto;
-    restoInfo = { nome: minNome, valore: valResto };
+    restoInfo = { nome: scelto, valore: valResto };
   }
   return { tipo: positivo ? "solata" : "controsolata", importo: magnitudo, valori, restoInfo };
 }
