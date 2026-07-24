@@ -50,6 +50,24 @@ function dividiInParti(importo, n) {
   return { shares, resto: Math.round(restoCent) / 100 };
 }
 
+// Arrotonda al centesimo: usato per confrontare "chi sta spendendo di più/meno" quando si
+// deve assegnare un centesimo residuo, evitando che minuscoli errori di virgola mobile (es.
+// 3.3300000000000005 invece di 3.33) facciano risultare "diversi" due importi identici sulla
+// carta.
+function centesimi(v) {
+  return Math.round((v || 0) * 100);
+}
+
+// Tra i partecipanti, individua quelli con l'importo minimo (o massimo) in "totaleCorrente"
+// (arrotondato al centesimo) e ne sceglie UNO A CASO tra chi è in parità: a parità di importo
+// speso, chi riceve/perde il centesimo residuo non è quindi prevedibile in anticipo.
+function sceltaCasualeTraPari(partecipanti, totaleCorrente, cercaMinimo) {
+  const valori = partecipanti.map(n => centesimi(totaleCorrente[n]));
+  const target = cercaMinimo ? Math.min(...valori) : Math.max(...valori);
+  const candidati = partecipanti.filter((n, i) => valori[i] === target);
+  return candidati[Math.floor(Math.random() * candidati.length)];
+}
+
 // ---------- SOLATA / CONTROSOLATA (generico, riusato da cene e da spese) ----------
 // "diff" = totale pagato - totale dovuto (di base).
 //   diff > 0  -> è stato pagato di più del dovuto: il surplus ("solata") viene ridistribuito
@@ -57,7 +75,8 @@ function dividiInParti(importo, n) {
 //   diff < 0  -> è stato pagato di meno del dovuto: il deficit ("controsolata") viene
 //                ridistribuito in modo equo tra i partecipanti (sottratto dal loro dovuto).
 // Il resto non distribuibile in centesimi va, con lo stesso criterio in entrambi i casi,
-// a chi sta spendendo di meno al momento del calcolo (usando "totaleCorrente").
+// a chi sta spendendo di meno al momento del calcolo (usando "totaleCorrente"); a parità di
+// importo speso, la persona viene scelta a caso tra chi è in pareggio.
 // Restituisce null se non c'è nulla da ridistribuire (diff trascurabile).
 function calcolaSolataControsolata(diff, partecipanti, totaleCorrente) {
   if (!partecipanti || partecipanti.length === 0 || Math.abs(diff) <= 0.005) return null;
@@ -73,19 +92,14 @@ function calcolaSolataControsolata(diff, partecipanti, totaleCorrente) {
   if (resto > 0.001) {
     // Solata (si aggiunge): il centesimo residuo va a chi sta spendendo di MENO.
     // Controsolata (si toglie): il centesimo residuo va tolto a chi sta spendendo di PIÙ.
-    let scelto = partecipanti[0];
-    partecipanti.forEach(nome => {
-      if (positivo) {
-        if ((totaleCorrente[nome] || 0) < (totaleCorrente[scelto] || 0)) scelto = nome;
-      } else {
-        if ((totaleCorrente[nome] || 0) > (totaleCorrente[scelto] || 0)) scelto = nome;
-      }
-    });
+    // A parità di importo speso, la scelta tra i pari è casuale.
+    const scelto = sceltaCasualeTraPari(partecipanti, totaleCorrente, positivo);
     const valResto = positivo ? resto : -resto;
     restoInfo = { nome: scelto, valore: valResto };
   }
   return { tipo: positivo ? "solata" : "controsolata", importo: magnitudo, valori, restoInfo };
 }
+
 
 // Aggiunge un contributo firmato alla "dettaglio" (elenco dei singoli addendi, usato per
 // mostrare in tabella espressioni come "0.01+0.03-0.02") di una persona/categoria.
@@ -143,8 +157,7 @@ function calcolaQuoteCondivise(persone, speseCondivise, sconti) {
       const { shares, resto } = dividiInParti(spesa.importo, part.length);
       part.forEach((nome, i) => assegna(nome, spesa, shares[i]));
       if (resto > 0.001) {
-        let minNome = part[0];
-        part.forEach(nome => { if (totaleCorrente[nome] < totaleCorrente[minNome]) minNome = nome; });
+        const minNome = sceltaCasualeTraPari(part, totaleCorrente, true);
         quoteColonna[minNome]["centesimini"] = (quoteColonna[minNome]["centesimini"] || 0) + resto;
         aggiungiContributo(centesiminiDettaglio, minNome, resto);
         totaleCorrente[minNome] += resto;
@@ -245,11 +258,7 @@ function ripartisciSpesaSemplice(s, part, spesaEffettivaCorrente) {
   part.forEach((nome, i) => { risultato[nome] = shares[i]; });
   let restoInfo = null;
   if (resto > 0.001) {
-    let minNome = part[0];
-    part.forEach(nome => {
-      const cur = spesaEffettivaCorrente[nome] || 0;
-      if (cur < (spesaEffettivaCorrente[minNome] || 0)) minNome = nome;
-    });
+    const minNome = sceltaCasualeTraPari(part, spesaEffettivaCorrente, true);
     risultato[minNome] += resto;
     restoInfo = { nome: minNome, valore: resto };
   }
@@ -353,6 +362,25 @@ function calcolaStatoGlobale(persone, speseBase, rimborsiData, ceneData) {
   //    spesa/cena). Va quindi sommata una sola volta per gruppo, non una volta per voce,
   //    altrimenti il dovuto di ognuno verrebbe moltiplicato per il numero di persone che hanno
   //    anticipato soldi per quella spesa.
+  //
+  //    Le voci "non eque" (con "quote") possono generare una solata/controsolata se il totale
+  //    anticipato non coincide con la somma delle quote inserite manualmente (vedi
+  //    calcolaRiepilogoGruppoSpesa). Questo aggiustamento va calcolato QUI, una sola volta per
+  //    gruppo, e riusato sia per i totali generali (spesaEffettiva/saldi/transazioni) sia per
+  //    la tabella di dettaglio di ogni spesa: altrimenti le due schede "Riepilogo" e "Spese in
+  //    dettaglio" mostrerebbero numeri diversi per la stessa spesa.
+  const gruppiNE = {};
+  spese.forEach((s, i) => {
+    if (!s.quote) return;
+    const gid = s.gruppoId || `__voce_singola_${i}`;
+    if (!gruppiNE[gid]) {
+      gruppiNE[gid] = { gruppoId: gid, descrizione: s.descrizione, isNE: true, pagatori: [], quote: s.quote, partecipanti: s.partecipanti || [] };
+    }
+    gruppiNE[gid].pagatori.push({ nome: s.nome, importo: s.importo });
+  });
+  const riepilogoGruppi = {};
+  Object.values(gruppiNE).forEach(g => { riepilogoGruppi[g.gruppoId] = calcolaRiepilogoGruppoSpesa(g); });
+
   const spesaEffettiva = {};
   nomi.forEach(n => spesaEffettiva[n] = 0);
   const gruppiQuoteGiaContati = new Set();
@@ -363,13 +391,14 @@ function calcolaStatoGlobale(persone, speseBase, rimborsiData, ceneData) {
   spese.forEach((s, i) => {
     if (s.quote) {
       const gid = s.gruppoId || `__voce_singola_${i}`;
+      const dovutoFinaleGruppo = riepilogoGruppi[gid].dovutoFinale;
       if (!gruppiQuoteGiaContati.has(gid)) {
         gruppiQuoteGiaContati.add(gid);
-        for (const nome in s.quote) {
-          if (spesaEffettiva[nome] !== undefined) spesaEffettiva[nome] += s.quote[nome];
+        for (const nome in dovutoFinaleGruppo) {
+          if (spesaEffettiva[nome] !== undefined) spesaEffettiva[nome] += dovutoFinaleGruppo[nome];
         }
       }
-      dettaglioSpese.push({ ...s, quoteCalcolate: s.quote });
+      dettaglioSpese.push({ ...s, quoteCalcolate: dovutoFinaleGruppo });
     } else {
       const part = ((s.partecipanti && s.partecipanti.length) ? s.partecipanti : nomi).filter(n => spesaEffettiva[n] !== undefined);
       const { risultato } = ripartisciSpesaSemplice(s, part, spesaEffettiva);
@@ -400,7 +429,7 @@ function calcolaStatoGlobale(persone, speseBase, rimborsiData, ceneData) {
   // 6. transazioni ottimizzate per pareggiare i conti
   const transazioni = calcolaTransazioni(saldi);
 
-  return { nomi, spese, dettaglioSpese, totaliPersona, spesaEffettiva, totaleGenerale, saldi, rimborsatoDA, rimborsatoA, transazioni };
+  return { nomi, spese, dettaglioSpese, riepilogoGruppi, totaliPersona, spesaEffettiva, totaleGenerale, saldi, rimborsatoDA, rimborsatoA, transazioni };
 }
 
 function calcolaTransazioni(saldi) {
